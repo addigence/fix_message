@@ -123,6 +123,21 @@ defmodule FIX.Message do
   `:begin_string` and `:msg_type` are required; `nil` promoted header
   fields are omitted. `:raw` is ignored — encoding always reflects the
   struct's current data.
+
+  ## Example
+
+      iex> message = %FIX.Message{
+      ...>   begin_string: "FIX.4.4",
+      ...>   msg_type: "0",
+      ...>   seq_num: 3,
+      ...>   sender_comp_id: "SENDER",
+      ...>   target_comp_id: "TARGET",
+      ...>   sending_time: "20260727-12:30:00",
+      ...>   body: [{112, "TEST"}]
+      ...> }
+      iex> message |> FIX.Message.to_fix() |> String.replace(<<0x01>>, "|")
+      "8=FIX.4.4|9=60|35=0|49=SENDER|56=TARGET|34=3|52=20260727-12:30:00|112=TEST|10=160|"
+
   """
   @spec to_fix(t()) :: binary()
   def to_fix(%__MODULE__{begin_string: begin_string, msg_type: msg_type} = message)
@@ -140,6 +155,55 @@ defmodule FIX.Message do
     raise ArgumentError,
           "cannot encode a FIX.Message without :begin_string and :msg_type, got: " <>
             inspect(message)
+  end
+
+  @doc """
+  Renders `message` as a human-readable string, for logs and debugging.
+
+  Encodes via `to_fix/1`, then replaces the SOH field delimiters with `|`,
+  the conventional display form for FIX messages. The result is not valid
+  wire data — use `to_fix/1` for that — and is not reversible when a field
+  value itself contains a `|`.
+
+  This function backs the `String.Chars` implementation, so interpolating
+  a message (`"got: \#{message}"`) produces the same display form.
+
+  Unlike `to_fix/1`, never raises: a message missing `:begin_string` or
+  `:msg_type` renders whatever fields are present, without the derived
+  BodyLength(9) and CheckSum(10).
+
+  ## Examples
+
+      iex> message = %FIX.Message{
+      ...>   begin_string: "FIX.4.4",
+      ...>   msg_type: "0",
+      ...>   seq_num: 3,
+      ...>   sender_comp_id: "SENDER",
+      ...>   target_comp_id: "TARGET",
+      ...>   body: [{112, "TEST"}]
+      ...> }
+      iex> FIX.Message.to_string(message)
+      "8=FIX.4.4|9=39|35=0|49=SENDER|56=TARGET|34=3|112=TEST|10=160|"
+
+      iex> FIX.Message.to_string(%FIX.Message{msg_type: "0", seq_num: 1})
+      "35=0|34=1|"
+
+  """
+  @spec to_string(t()) :: binary()
+  def to_string(%__MODULE__{begin_string: begin_string, msg_type: msg_type} = message)
+      when is_binary(begin_string) and is_binary(msg_type) do
+    message |> to_fix() |> String.replace(@soh, "|")
+  end
+
+  def to_string(%__MODULE__{} = message) do
+    fields =
+      for {tag, value} <-
+            [{8, message.begin_string}, {35, message.msg_type} | header_fields(message)] ++
+              message.header ++ message.body,
+          value != nil,
+          do: {tag, value}
+
+    fields |> encode_fields() |> String.replace(@soh, "|")
   end
 
   # ----------------------------------------------------------------------------
@@ -244,7 +308,7 @@ defmodule FIX.Message do
 
   defimpl String.Chars do
     def to_string(message) do
-      FIX.Message.to_fix(message)
+      FIX.Message.to_string(message)
     end
   end
 end

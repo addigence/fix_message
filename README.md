@@ -9,6 +9,7 @@ It provides:
 - ordered header, body, and trailer parsing
 - byte-exact parsing of length-prefixed data fields, including values containing SOH
 - a message struct with commonly used session fields promoted to named attributes
+- pipe-delimited display output for logs, inspection, and string interpolation
 - preservation of the original wire bytes for message stores, audit logs, and resends
 - built-in FIX 4.4 and FIX 5.0 SP2 dictionaries
 - extensible dictionaries for counterparty-specific fields
@@ -54,7 +55,28 @@ wire_message = FIX.Message.to_fix(message)
 
 `to_fix/1` computes `BodyLength(9)` and `CheckSum(10)`. `begin_string` and `msg_type` are required; optional promoted fields with `nil` values are omitted.
 
-`FIX.Message` implements `String.Chars`, so `to_string(message)` produces the same wire representation.
+### Display a message
+
+Use `FIX.Message.to_string/1` for conventional, human-readable FIX output with `|` delimiters:
+
+```elixir
+FIX.Message.to_string(message)
+# => "8=FIX.4.4|9=...|35=D|49=SENDER|56=TARGET|34=42|...|10=...|"
+
+"sending: #{message}"
+# String interpolation uses the same display form.
+```
+
+Display output is intended for logs and debugging; it is **not valid FIX wire data**. Use `FIX.Message.to_fix/1` when sending or persisting an encoded message.
+
+Unlike `to_fix/1`, `to_string/1` also accepts incomplete message structs. In that case it renders the available fields without derived `BodyLength(9)` or `CheckSum(10)` fields:
+
+```elixir
+FIX.Message.to_string(%FIX.Message{msg_type: "0", seq_num: 1})
+# => "35=0|34=1|"
+```
+
+Because field values can themselves contain `|`, display output is not guaranteed to be reversible. `FIX.Message` implements `String.Chars`, so `Kernel.to_string/1` and string interpolation delegate to this display function.
 
 ### Parse a message
 
@@ -94,7 +116,7 @@ A parsed message contains:
 | `body`              |       — | body fields in wire order              |
 | `raw`               |       — | exact bytes consumed from the input    |
 
-`BodyLength(9)` and `CheckSum(10)` are validated but are not stored. Encoding always uses the current struct data and ignores `raw`.
+`BodyLength(9)` and `CheckSum(10)` are validated but are not stored. Wire encoding with `to_fix/1` always uses the current struct data and ignores `raw`.
 
 Values remain binaries unless explicitly promoted to another type. This preserves formatting and precision, particularly for timestamps and numeric FIX values.
 

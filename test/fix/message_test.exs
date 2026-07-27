@@ -227,10 +227,17 @@ defmodule FIX.MessageTest do
   end
 
   describe "String.Chars" do
-    test "to_string/1 encodes the message" do
+    test "to_string/1 renders the display form with | delimiters" do
       message = %Message{begin_string: "FIX.4.4", msg_type: "0", seq_num: 1}
 
-      assert to_string(message) == Message.to_fix(message)
+      assert to_string(message) == "8=FIX.4.4|9=10|35=0|34=1|10=165|"
+      assert to_string(message) == String.replace(Message.to_fix(message), <<0x01>>, "|")
+    end
+
+    test "to_string/1 does not raise on incomplete messages" do
+      assert to_string(%Message{}) == ""
+      assert to_string(%Message{begin_string: "FIX.4.4"}) == "8=FIX.4.4|"
+      assert to_string(%Message{msg_type: "0", seq_num: 1}) == "35=0|34=1|"
     end
   end
 end

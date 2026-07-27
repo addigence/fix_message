@@ -1,14 +1,21 @@
 defmodule FIX.Message.MixProject do
   use Mix.Project
 
-  def project do
+  @version "0.1.1"
+
+  @repo_url "https://github.com/addigence/fix_message"
+
+  def(project) do
     [
       app: :fix_message,
-      version: "0.1.0",
+      version: @version,
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      package: package()
+      package: package(),
+      description: description(),
+      source_url: @repo_url,
+      homepage_url: @repo_url
     ]
   end
 
@@ -29,14 +36,15 @@ defmodule FIX.Message.MixProject do
 
   defp package do
     [
-      description:
-        "Elixir library for framing, parsing, inspecting, and encoding Financial Information eXchange (FIX) messages.",
       licenses: ["Apache-2.0"],
       links: %{
         "GitHub" => "https://github.com/addigence/fix_message"
       },
-      source_url: "https://github.com/addigence/fix_message",
       files: ~w(lib mix.exs README.md LICENSE)
     ]
+  end
+
+  defp description do
+    "Elixir library for framing, parsing, inspecting, and encoding Financial Information eXchange (FIX) messages."
   end
 end

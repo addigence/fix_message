@@ -25,45 +25,50 @@ defmodule FIX.ParserTest do
   end
 
   describe "parse/1 single fields" do
-    test "parses a single field" do
-      assert Parser.parse("35=D" <> @soh) == {:ok, [{35, "D"}]}
+    test "parses a single header field" do
+      assert Parser.parse("35=D" <> @soh) == {:ok, {[{35, "D"}], [], []}}
+    end
+
+    test "parses a single body field" do
+      assert Parser.parse("58=hello" <> @soh) == {:ok, {[], [{58, "hello"}], []}}
     end
 
     test "parses a field with a multi-digit tag" do
-      assert Parser.parse("10114=Y" <> @soh) == {:ok, [{10114, "Y"}]}
+      assert Parser.parse("10114=Y" <> @soh) == {:ok, {[], [{10114, "Y"}], []}}
     end
 
     test "parses a field with an empty value" do
-      assert Parser.parse("58=" <> @soh) == {:ok, [{58, ""}]}
+      assert Parser.parse("58=" <> @soh) == {:ok, {[], [{58, ""}], []}}
     end
 
     test "parses a value containing an equals sign" do
-      assert Parser.parse("58=a=b=c" <> @soh) == {:ok, [{58, "a=b=c"}]}
+      assert Parser.parse("58=a=b=c" <> @soh) == {:ok, {[], [{58, "a=b=c"}], []}}
     end
 
     test "parses a value containing spaces and punctuation" do
       value = "Order rejected: insufficient funds!"
 
-      assert Parser.parse("58=#{value}" <> @soh) == {:ok, [{58, value}]}
+      assert Parser.parse("58=#{value}" <> @soh) == {:ok, {[], [{58, value}], []}}
     end
 
     test "parses a UTF-8 value" do
-      assert Parser.parse("58=héllo wörld 日本" <> @soh) == {:ok, [{58, "héllo wörld 日本"}]}
+      assert Parser.parse("58=héllo wörld 日本" <> @soh) ==
+               {:ok, {[], [{58, "héllo wörld 日本"}], []}}
     end
 
     test "parses a decimal price value as a string" do
-      assert Parser.parse("44=150.25" <> @soh) == {:ok, [{44, "150.25"}]}
+      assert Parser.parse("44=150.25" <> @soh) == {:ok, {[], [{44, "150.25"}], []}}
     end
   end
 
-  describe "parse/1 multiple fields" do
-    test "parses two fields in order" do
+  describe "parse/1 header/body/trailer sections" do
+    test "parses two header fields in order" do
       input = "8=FIX.4.2" <> @soh <> "35=D" <> @soh
 
-      assert Parser.parse(input) == {:ok, [{8, "FIX.4.2"}, {35, "D"}]}
+      assert Parser.parse(input) == {:ok, {[{8, "FIX.4.2"}, {35, "D"}], [], []}}
     end
 
-    test "parses a complete NewOrderSingle message" do
+    test "splits a complete NewOrderSingle message into sections" do
       input =
         Enum.join(
           [
@@ -90,9 +95,9 @@ defmodule FIX.ParserTest do
           @soh
         ) <> @soh
 
-      assert {:ok, fields} = Parser.parse(input)
+      assert {:ok, {header, body, trailer}} = Parser.parse(input)
 
-      assert fields == [
+      assert header == [
                {8, "FIX.4.2"},
                {9, "145"},
                {35, "D"},
@@ -100,7 +105,10 @@ defmodule FIX.ParserTest do
                {49, "ABC_DEFG01"},
                {52, "20090323-15:40:29"},
                {56, "CCG"},
-               {115, "XYZ"},
+               {115, "XYZ"}
+             ]
+
+      assert body == [
                {11, "NF 0542/03232009"},
                {54, "1"},
                {38, "100"},
@@ -110,15 +118,65 @@ defmodule FIX.ParserTest do
                {47, "A"},
                {60, "20090323-15:40:29"},
                {21, "1"},
-               {207, "N"},
-               {10, "139"}
+               {207, "N"}
              ]
+
+      assert trailer == [{10, "139"}]
+    end
+
+    test "a header tag after the body has started stays in the body" do
+      input = "35=D" <> @soh <> "11=ORDER-1" <> @soh <> "49=SNEAKY" <> @soh
+
+      assert Parser.parse(input) ==
+               {:ok, {[{35, "D"}], [{11, "ORDER-1"}, {49, "SNEAKY"}], []}}
+    end
+
+    test "fields after the trailer has started stay in the trailer" do
+      input = "35=D" <> @soh <> "10=123" <> @soh <> "58=late" <> @soh
+
+      assert Parser.parse(input) == {:ok, {[{35, "D"}], [], [{10, "123"}, {58, "late"}]}}
+    end
+
+    test "the trailer can directly follow the header" do
+      input = "35=0" <> @soh <> "10=123" <> @soh
+
+      assert Parser.parse(input) == {:ok, {[{35, "0"}], [], [{10, "123"}]}}
+    end
+
+    test "Signature(89) with SignatureLength(93) lands in the trailer" do
+      signature = "sig" <> @soh <> "bytes"
+
+      input =
+        "35=D" <>
+          @soh <>
+          "58=note" <>
+          @soh <>
+          "93=#{byte_size(signature)}" <> @soh <> "89=#{signature}" <> @soh <> "10=123" <> @soh
+
+      assert Parser.parse(input) ==
+               {:ok, {[{35, "D"}], [{58, "note"}], [{93, "9"}, {89, signature}, {10, "123"}]}}
     end
 
     test "preserves duplicate tags in order" do
       input = "58=first" <> @soh <> "58=second" <> @soh
 
-      assert Parser.parse(input) == {:ok, [{58, "first"}, {58, "second"}]}
+      assert Parser.parse(input) == {:ok, {[], [{58, "first"}, {58, "second"}], []}}
+    end
+
+    test "concatenating the sections reconstructs the field stream" do
+      input =
+        Enum.join(["8=FIX.4.4", "9=20", "35=D", "11=X", "54=1", "10=000"], @soh) <> @soh
+
+      assert {:ok, {header, body, trailer}} = Parser.parse(input)
+
+      assert header ++ body ++ trailer == [
+               {8, "FIX.4.4"},
+               {9, "20"},
+               {35, "D"},
+               {11, "X"},
+               {54, "1"},
+               {10, "000"}
+             ]
     end
   end
 
@@ -127,49 +185,51 @@ defmodule FIX.ParserTest do
       raw = "abc" <> @soh <> "def=" <> @soh <> "ghi"
       input = "95=#{byte_size(raw)}" <> @soh <> "96=#{raw}" <> @soh <> "35=D" <> @soh
 
+      # RawData is a body field, so the leading 95/96 pair starts the body
+      # and the trailing MsgType(35) is not promoted back into the header.
       assert Parser.parse(input) ==
-               {:ok, [{95, "#{byte_size(raw)}"}, {96, raw}, {35, "D"}]}
+               {:ok, {[], [{95, "#{byte_size(raw)}"}, {96, raw}, {35, "D"}], []}}
     end
 
     test "parses EncodedText(355) containing SOH using EncodedTextLen(354)" do
       encoded = <<1, 2, 3, 1>>
       input = "354=4" <> @soh <> "355=#{encoded}" <> @soh
 
-      assert Parser.parse(input) == {:ok, [{354, "4"}, {355, encoded}]}
+      assert Parser.parse(input) == {:ok, {[], [{354, "4"}, {355, encoded}], []}}
     end
 
-    test "parses XmlData(213) with XmlDataLen(212)" do
+    test "parses the header data pair XmlData(213) with XmlDataLen(212) into the header" do
       xml = "<a b=\"c\">" <> @soh <> "</a>"
       input = "212=#{byte_size(xml)}" <> @soh <> "213=#{xml}" <> @soh
 
-      assert Parser.parse(input) == {:ok, [{212, "14"}, {213, xml}]}
+      assert Parser.parse(input) == {:ok, {[{212, "14"}, {213, xml}], [], []}}
     end
 
     test "parses the non-adjacent EncodedListStatusText(446) pair with EncodedListStatusTextLen(445)" do
       text = "status" <> @soh <> "text"
       input = "445=#{byte_size(text)}" <> @soh <> "446=#{text}" <> @soh
 
-      assert Parser.parse(input) == {:ok, [{445, "11"}, {446, text}]}
+      assert Parser.parse(input) == {:ok, {[], [{445, "11"}, {446, text}], []}}
     end
 
     test "parses EncryptedPassword(1402) with EncryptedPasswordLen(1401)" do
       password = <<0, 1, 2, 255, 1, 42>>
       input = "1401=#{byte_size(password)}" <> @soh <> "1402=#{password}" <> @soh
 
-      assert Parser.parse(input) == {:ok, [{1401, "6"}, {1402, password}]}
+      assert Parser.parse(input) == {:ok, {[], [{1401, "6"}, {1402, password}], []}}
     end
 
     test "parses SecurityXML(1185) with SecurityXMLLen(1184)" do
       xml = "<Instrmt>" <> @soh <> "</Instrmt>"
       input = "1184=#{byte_size(xml)}" <> @soh <> "1185=#{xml}" <> @soh
 
-      assert Parser.parse(input) == {:ok, [{1184, "20"}, {1185, xml}]}
+      assert Parser.parse(input) == {:ok, {[], [{1184, "20"}, {1185, xml}], []}}
     end
 
     test "parses a zero-length data field" do
       input = "95=0" <> @soh <> "96=" <> @soh
 
-      assert Parser.parse(input) == {:ok, [{95, "0"}, {96, ""}]}
+      assert Parser.parse(input) == {:ok, {[], [{95, "0"}, {96, ""}], []}}
     end
 
     test "is garbled when the data field is missing after the length field" do
@@ -199,8 +259,8 @@ defmodule FIX.ParserTest do
   end
 
   describe "parse/1 malformed input" do
-    test "returns empty field list for an empty string" do
-      assert Parser.parse("") == {:ok, []}
+    test "returns empty sections for an empty string" do
+      assert Parser.parse("") == {:ok, {[], [], []}}
     end
 
     test "is garbled when the last field has no trailing SOH" do
@@ -299,7 +359,7 @@ defmodule FIX.ParserTest do
   end
 
   describe "parse_message/1" do
-    test "frames and parses a complete message" do
+    test "frames and parses a complete message into sections" do
       msg = build_message([{35, "0"}, {34, "3"}, {49, "SENDER"}, {56, "TARGET"}])
 
       body_len =
@@ -309,7 +369,7 @@ defmodule FIX.ParserTest do
           )
         )
 
-      assert {:ok, fields, ""} = Parser.parse_message(msg)
+      assert {:ok, {header, body, trailer}, ""} = Parser.parse_message(msg)
 
       assert [
                {8, "FIX.4.4"},
@@ -317,29 +377,31 @@ defmodule FIX.ParserTest do
                {35, "0"},
                {34, "3"},
                {49, "SENDER"},
-               {56, "TARGET"},
-               {10, _checksum}
-             ] = fields
+               {56, "TARGET"}
+             ] = header
+
+      assert body == []
+      assert [{10, _checksum}] = trailer
     end
 
     test "parses a message with a data field containing SOH" do
       raw = "bin" <> @soh <> "data"
       msg = build_message([{35, "D"}, {95, byte_size(raw)}, {96, raw}, {58, "note"}])
 
-      assert {:ok, fields, ""} = Parser.parse_message(msg)
-      assert {96, raw} in fields
-      assert {58, "note"} in fields
+      assert {:ok, {_header, body, _trailer}, ""} = Parser.parse_message(msg)
+      assert {96, raw} in body
+      assert {58, "note"} in body
     end
 
     test "returns the rest of the buffer for pipelined messages" do
       msg1 = build_message([{35, "0"}, {34, "1"}])
       msg2 = build_message([{35, "0"}, {34, "2"}])
 
-      assert {:ok, fields1, rest} = Parser.parse_message(msg1 <> msg2)
-      assert {34, "1"} in fields1
+      assert {:ok, {header1, _, _}, rest} = Parser.parse_message(msg1 <> msg2)
+      assert {34, "1"} in header1
 
-      assert {:ok, fields2, ""} = Parser.parse_message(rest)
-      assert {34, "2"} in fields2
+      assert {:ok, {header2, _, _}, ""} = Parser.parse_message(rest)
+      assert {34, "2"} in header2
     end
 
     test "returns :incomplete for a partial message" do

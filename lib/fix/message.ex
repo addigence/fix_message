@@ -14,16 +14,17 @@ defmodule FIX.Message do
    * `:poss_dup_flag` — PossDupFlag(43), as a boolean
    * `:orig_sending_time` — OrigSendingTime(122), as a UTCTimestamp binary
 
- These are the fields the session layer reads or writes itself: it stamps
- SendingTime on every send, and rewrites PossDupFlag/OrigSendingTime when
- resending. Timestamps stay binaries because their precision varies and
- round-trip fidelity matters.
+  These are the fields the session layer reads or writes itself: it stamps
+  SendingTime on every send, and rewrites PossDupFlag/OrigSendingTime when
+  resending. Timestamps stay binaries because their precision varies and
+  round-trip fidelity matters.
 
- `:fields` holds only the remaining fields (other header fields and the
- body), in wire order. Header fields the engine never rewrites (sub and
- location IDs, OnBehalfOf/DeliverTo routing, ...) belong at the front of
- `:fields` so they encode into the header region. The derived fields BodyLength(9) and CheckSum(10)
-  are never stored; `to_fix/1` computes them when encoding.
+  The remaining fields keep the message's wire structure: `:header` holds
+  the unpromoted header fields (sub and location IDs, OnBehalfOf/DeliverTo
+  routing, ...) and `:body` holds the message body, each in wire order.
+  `to_fix/1` encodes the promoted fields first, then `:header`, then
+  `:body`. The derived fields BodyLength(9) and CheckSum(10) are never
+  stored; `to_fix/1` computes them when encoding.
 
   `:raw` preserves the original wire bytes of a parsed message. FIX requires
   resending original messages on ResendRequest, and message stores and audit
@@ -38,19 +39,19 @@ defmodule FIX.Message do
       ...>   seq_num: 3,
       ...>   sender_comp_id: "SENDER",
       ...>   target_comp_id: "TARGET",
-      ...>   fields: [{112, "TEST"}]
+      ...>   body: [{112, "TEST"}]
       ...> }
       iex> raw = FIX.Message.to_fix(message)
       iex> {:ok, parsed, ""} = FIX.Message.parse(raw)
-      iex> {parsed.msg_type, parsed.seq_num, parsed.fields}
+      iex> {parsed.msg_type, parsed.seq_num, parsed.body}
       {"0", 3, [{112, "TEST"}]}
       iex> parsed.raw == raw
       true
 
   """
 
-  @soh <<0x01>>
   @default_dictionary FIX.Dictionary.FIX44
+  @soh <<0x01>>
 
   @type tag :: pos_integer()
   @type fields :: [{tag(), binary()}]
@@ -64,7 +65,8 @@ defmodule FIX.Message do
           sending_time: binary() | nil,
           poss_dup_flag: boolean() | nil,
           orig_sending_time: binary() | nil,
-          fields: fields(),
+          header: fields(),
+          body: fields(),
           raw: binary() | nil
         }
 
@@ -77,7 +79,8 @@ defmodule FIX.Message do
     sending_time: nil,
     poss_dup_flag: nil,
     orig_sending_time: nil,
-    fields: [],
+    header: [],
+    body: [],
     raw: nil
   )
 
@@ -85,9 +88,13 @@ defmodule FIX.Message do
   Parses one complete FIX message off the front of `binary`.
 
   Frames and tokenizes via `FIX.Parser.parse_message/2`, then promotes the
-  canonical header fields onto the struct. BodyLength(9) and CheckSum(10)
-  are validated by the parser and then discarded. The consumed wire bytes
-  are kept in `:raw`.
+  canonical header fields onto the struct. Promotion is positional: the
+  parser splits the message into header, body, and trailer sections, and
+  only fields in the header section are promoted — a header tag appearing
+  after the body has started stays in `:body`. Unpromoted header fields
+  land in `:header`. BodyLength(9) and the trailer (CheckSum(10)) are
+  validated by the parser and then discarded. The consumed wire bytes are
+  kept in `:raw`.
 
   Returns `{:ok, message, rest}` where `rest` is the remainder of the
   buffer, `:incomplete` when more bytes are needed, or `{:error, reason}`.
@@ -97,9 +104,9 @@ defmodule FIX.Message do
   @spec parse(binary(), module()) ::
           {:ok, t(), rest :: binary()} | :incomplete | {:error, FIX.Parser.frame_error()}
   def parse(binary, dictionary \\ @default_dictionary) do
-    with {:ok, fields, rest} <- FIX.Parser.parse_message(binary, dictionary),
+    with {:ok, sections, rest} <- FIX.Parser.parse_message(binary, dictionary),
          raw = binary_part(binary, 0, byte_size(binary) - byte_size(rest)),
-         {:ok, message} <- build(fields, raw) do
+         {:ok, message} <- build(sections, raw) do
       {:ok, message, rest}
     end
   end
@@ -110,8 +117,8 @@ defmodule FIX.Message do
   Assembles the header from the promoted struct fields — in the order
   BeginString(8), BodyLength(9), MsgType(35), SenderCompID(49),
   TargetCompID(56), MsgSeqNum(34), PossDupFlag(43), SendingTime(52),
-  OrigSendingTime(122) — followed by `:fields` verbatim, and computes
-  BodyLength(9) and CheckSum(10).
+  OrigSendingTime(122) — followed by `:header` and `:body` verbatim, and
+  computes BodyLength(9) and CheckSum(10).
 
   `:begin_string` and `:msg_type` are required; `nil` promoted header
   fields are omitted. `:raw` is ignored — encoding always reflects the
@@ -120,7 +127,8 @@ defmodule FIX.Message do
   @spec to_fix(t()) :: binary()
   def to_fix(%__MODULE__{begin_string: begin_string, msg_type: msg_type} = message)
       when is_binary(begin_string) and is_binary(msg_type) do
-    body = encode_fields([{35, msg_type} | header_fields(message)] ++ message.fields)
+    body =
+      encode_fields([{35, msg_type} | header_fields(message)] ++ message.header ++ message.body)
 
     payload =
       "8=" <> begin_string <> @soh <> "9=" <> Integer.to_string(byte_size(body)) <> @soh <> body
@@ -138,18 +146,18 @@ defmodule FIX.Message do
   # Parsing
   # ----------------------------------------------------------------------------
 
-  defp build([{8, begin_string}, {9, _body_length} | fields], raw) do
-    # The parser guarantees the trailer, so the last field is CheckSum(10).
-    [{10, _checksum} | reversed] = Enum.reverse(fields)
-    fields = Enum.reverse(reversed)
-
-    {msg_type, fields} = take_field(fields, 35)
-    {seq_num, fields} = take_field(fields, 34)
-    {sender_comp_id, fields} = take_field(fields, 49)
-    {target_comp_id, fields} = take_field(fields, 56)
-    {sending_time, fields} = take_field(fields, 52)
-    {poss_dup_flag, fields} = take_field(fields, 43)
-    {orig_sending_time, fields} = take_field(fields, 122)
+  # Promoted fields are taken from the header section only; the leftovers
+  # (sub and location IDs, routing, ...) stay in :header. The trailer is
+  # already validated by the parser and carries no data worth keeping, so
+  # it is dropped.
+  defp build({[{8, begin_string}, {9, _body_length} | header], body, _trailer}, raw) do
+    {msg_type, header} = pop_field(header, 35)
+    {seq_num, header} = pop_field(header, 34)
+    {sender_comp_id, header} = pop_field(header, 49)
+    {target_comp_id, header} = pop_field(header, 56)
+    {sending_time, header} = pop_field(header, 52)
+    {poss_dup_flag, header} = pop_field(header, 43)
+    {orig_sending_time, header} = pop_field(header, 122)
 
     with {:ok, seq_num} <- parse_seq_num(seq_num),
          {:ok, poss_dup_flag} <- parse_boolean(poss_dup_flag) do
@@ -163,16 +171,24 @@ defmodule FIX.Message do
          sending_time: sending_time,
          poss_dup_flag: poss_dup_flag,
          orig_sending_time: orig_sending_time,
-         fields: fields,
+         header: header,
+         body: body,
          raw: raw
        }}
     end
   end
 
-  defp take_field(fields, tag) do
-    case Enum.split_while(fields, fn {t, _value} -> t != tag end) do
-      {_fields, []} -> {nil, fields}
-      {before, [{^tag, value} | rest]} -> {value, before ++ rest}
+  # A dictionary that doesn't classify BeginString/BodyLength as header
+  # tags (e.g. one built without extending a standard dictionary) can't
+  # support header promotion.
+  defp build(_sections, _raw), do: {:error, :garbled}
+
+  # Promoted fields must be removed, not just read: whatever remains in the
+  # header list is re-encoded verbatim by to_fix/1.
+  defp pop_field(fields, tag) do
+    case List.keytake(fields, tag, 0) do
+      {{^tag, value}, rest} -> {value, rest}
+      nil -> {nil, fields}
     end
   end
 

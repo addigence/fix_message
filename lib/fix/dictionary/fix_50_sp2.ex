@@ -13,9 +13,97 @@ defmodule FIX.Dictionary.FIX50SP2 do
   have gaps (1525 -> 1527, 1678 -> 1697), some are reverse-ordered
   (2372 -> 2371, 2802 -> 2801), and the PaymentStreamFormula XMLDATA fields
   are far from their length fields (43109 -> 42684).
-  """
 
+  The header and trailer tag sets are the FIXT 1.1 standard header and
+  trailer, which FIX 5.0 messages travel under.
+  """
   use FIX.Dictionary
+
+  # ----------------------------------------------------------------------------
+  # Standard header (FIXT 1.1)
+  # ----------------------------------------------------------------------------
+
+  # BeginString
+  header_field(8)
+  # BodyLength
+  header_field(9)
+  # MsgType
+  header_field(35)
+  # ApplVerID
+  header_field(1128)
+  # ApplExtID
+  header_field(1156)
+  # CstmApplVerID
+  header_field(1129)
+  # SenderCompID
+  header_field(49)
+  # TargetCompID
+  header_field(56)
+  # OnBehalfOfCompID
+  header_field(115)
+  # DeliverToCompID
+  header_field(128)
+  # SecureDataLen
+  header_field(90)
+  # SecureData
+  header_field(91)
+  # MsgSeqNum
+  header_field(34)
+  # SenderSubID
+  header_field(50)
+  # SenderLocationID
+  header_field(142)
+  # TargetSubID
+  header_field(57)
+  # TargetLocationID
+  header_field(143)
+  # OnBehalfOfSubID
+  header_field(116)
+  # OnBehalfOfLocationID
+  header_field(144)
+  # DeliverToSubID
+  header_field(129)
+  # DeliverToLocationID
+  header_field(145)
+  # PossDupFlag
+  header_field(43)
+  # PossResend
+  header_field(97)
+  # SendingTime
+  header_field(52)
+  # OrigSendingTime
+  header_field(122)
+  # XmlDataLen
+  header_field(212)
+  # XmlData
+  header_field(213)
+  # MessageEncoding
+  header_field(347)
+  # LastMsgSeqNumProcessed
+  header_field(369)
+  # NoHops
+  header_field(627)
+  # HopCompID
+  header_field(628)
+  # HopSendingTime
+  header_field(629)
+  # HopRefID
+  header_field(630)
+
+  # ----------------------------------------------------------------------------
+  # Standard trailer
+  # ----------------------------------------------------------------------------
+
+  # SignatureLength
+  trailer_field(93)
+  # Signature
+  trailer_field(89)
+  # CheckSum
+  trailer_field(10)
+
+  # ----------------------------------------------------------------------------
+  # Data fields
+  # ----------------------------------------------------------------------------
 
   # SecureDataLen -> SecureData
   data_field(90, 91)

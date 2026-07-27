@@ -8,37 +8,41 @@ defmodule FIX.Parser do
      validates the BeginString(8)/BodyLength(9) structure and the
      CheckSum(10) trailer, and splits complete messages off the buffer.
 
-  * `parse/2` — tokenizes a complete message of `tag=value<SOH>` fields.
-     Length-prefixed data fields (RawData, EncodedText, ...) are sliced
-     byte-exactly, so their values may contain the SOH delimiter.
+  * `parse/2` — tokenizes a complete message of `tag=value<SOH>` fields
+     into `{header, body, trailer}` sections. Length-prefixed data fields
+     (RawData, EncodedText, ...) are sliced byte-exactly, so their values
+     may contain the SOH delimiter.
 
-  Which tags are length-prefixed data fields is determined by a
-  `FIX.Dictionary`, defaulting to `FIX.Dictionary.FIX44`. Pass a custom
-  dictionary to handle counterparty-defined data fields.
+  Which tags are length-prefixed data fields, and which belong to the
+  standard header and trailer, is determined by a `FIX.Dictionary`,
+  defaulting to `FIX.Dictionary.FIX44`. Pass a custom dictionary to handle
+  counterparty-defined data fields.
   """
 
   @default_dictionary FIX.Dictionary.FIX44
 
   @type fields :: FIX.Message.fields()
+  @type sections :: {header :: fields(), body :: fields(), trailer :: fields()}
   @type frame_error :: :garbled | :checksum_mismatch
 
   @doc """
   Frames and tokenizes one complete FIX message off the front of `buffer`.
 
-  Combines `frame/1` and `parse/1`: returns `{:ok, fields, rest}` for a
-  complete, checksum-valid message whose fields all parsed, where `rest` is
-  the remainder of the buffer (any pipelined messages after this one).
+  Combines `frame/1` and `parse/1`: returns `{:ok, sections, rest}` for a
+  complete, checksum-valid message whose fields all parsed, where `sections`
+  is the `{header, body, trailer}` split (see `parse/2`) and `rest` is the
+  remainder of the buffer (any pipelined messages after this one).
 
   Returns `:incomplete` when more bytes are needed, and `{:error, reason}`
   otherwise. A message that frames correctly but contains unparseable fields
   is `{:error, :garbled}`.
   """
   @spec parse_message(binary(), module()) ::
-          {:ok, fields(), rest :: binary()} | :incomplete | {:error, frame_error()}
+          {:ok, sections(), rest :: binary()} | :incomplete | {:error, frame_error()}
   def parse_message(buffer, dictionary \\ @default_dictionary) do
     with {:ok, message, rest} <- frame(buffer),
-         {:ok, fields} <- parse(message, dictionary) do
-      {:ok, fields, rest}
+         {:ok, sections} <- parse(message, dictionary) do
+      {:ok, sections, rest}
     end
   end
 
@@ -86,23 +90,32 @@ defmodule FIX.Parser do
   def frame(_buffer), do: {:error, :garbled}
 
   @doc """
-  Tokenizes FIX fields from `binary`.
+  Tokenizes FIX fields from `binary` into `{header, body, trailer}` sections.
 
-  Returns `{:ok, fields}` when the entire input parses, where tags are
-  integers and values are binaries, or `{:error, :garbled}` if any part of the
-  input cannot be consumed.
+  Returns `{:ok, {header, body, trailer}}` when the entire input parses,
+  where each section is a list of `{tag, value}` tuples in wire order (tags
+  are integers, values are binaries), or `{:error, :garbled}` if any part of
+  the input cannot be consumed.
+
+  The split is positional and forward-only, driven by the dictionary's
+  `header_tag?/1` and `trailer_tag?/1`: fields accumulate into the header
+  until the first non-header tag, then into the body until the first trailer
+  tag, then into the trailer. A header tag appearing after the body has
+  started stays in the body. Concatenating the sections reconstructs the
+  full field stream.
 
   Data fields are length-prefixed by their companion field (e.g.
   RawDataLength(95) precedes RawData(96)) and are sliced by the declared byte
   count, so their values may contain SOH. A length field not followed by its
   companion data field with exactly the declared number of bytes is garbled.
+  Both halves of a pair land in the section chosen by the length tag.
   The companion pairs are defined by `dictionary` (see `FIX.Dictionary`).
   """
-  @spec parse(binary(), module()) :: {:ok, fields()} | {:error, :garbled}
+  @spec parse(binary(), module()) :: {:ok, sections()} | {:error, :garbled}
   def parse(binary, dictionary \\ @default_dictionary) do
-    case parse(binary, dictionary, []) do
-      {fields, ""} -> {:ok, fields}
-      {_fields, _rest} -> {:error, :garbled}
+    case parse(binary, dictionary, :header, {[], [], []}) do
+      {sections, ""} -> {:ok, sections}
+      {_sections, _rest} -> {:error, :garbled}
     end
   end
 
@@ -110,23 +123,48 @@ defmodule FIX.Parser do
   # Field tokenizer
   # ----------------------------------------------------------------------------
 
-  defp parse(binary, dict, acc) do
+  defp parse(binary, dict, mode, acc) do
     with {:tag, tag, rest} <- tag(binary, 0, 0),
          {:value, value, rest} <- value(rest, rest, 0) do
+      mode = section(mode, tag, dict)
+
       case dict.companion_data_tag(tag) do
         nil ->
-          parse(rest, dict, [{tag, value} | acc])
+          parse(rest, dict, mode, put(acc, mode, {tag, value}))
 
         data_tag ->
           case data_field(rest, data_tag, value) do
-            {:data, data, rest} -> parse(rest, dict, [{data_tag, data}, {tag, value} | acc])
-            :error -> {:lists.reverse(acc), binary}
+            {:data, data, rest} ->
+              acc = acc |> put(mode, {tag, value}) |> put(mode, {data_tag, data})
+              parse(rest, dict, mode, acc)
+
+            :error ->
+              {finish(acc), binary}
           end
       end
     else
-      _ -> {:lists.reverse(acc), binary}
+      _ -> {finish(acc), binary}
     end
   end
+
+  # The section state machine only moves forward: header -> body -> trailer.
+  defp section(:header, tag, dict) do
+    cond do
+      dict.header_tag?(tag) -> :header
+      dict.trailer_tag?(tag) -> :trailer
+      true -> :body
+    end
+  end
+
+  defp section(:body, tag, dict), do: if(dict.trailer_tag?(tag), do: :trailer, else: :body)
+  defp section(:trailer, _tag, _dict), do: :trailer
+
+  defp put({header, body, trailer}, :header, field), do: {[field | header], body, trailer}
+  defp put({header, body, trailer}, :body, field), do: {header, [field | body], trailer}
+  defp put({header, body, trailer}, :trailer, field), do: {header, body, [field | trailer]}
+
+  defp finish({header, body, trailer}),
+    do: {:lists.reverse(header), :lists.reverse(body), :lists.reverse(trailer)}
 
   defp tag(<<digit, rest::binary>>, n, count) when digit in ?0..?9,
     do: tag(rest, n * 10 + (digit - ?0), count + 1)

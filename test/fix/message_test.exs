@@ -47,7 +47,7 @@ defmodule FIX.MessageTest do
              } = message
     end
 
-    test "keeps only unpromoted fields in :fields, in wire order" do
+    test "keeps unpromoted header fields in :header and the body in :body, in wire order" do
       raw =
         build_message([
           {35, "D"},
@@ -55,19 +55,35 @@ defmodule FIX.MessageTest do
           {49, "S"},
           {52, "20090323-15:40:29"},
           {56, "T"},
+          {115, "XYZ"},
+          {116, "SUB"},
           {11, "ORDER-1"},
           {54, "1"}
         ])
 
       assert {:ok, message, ""} = Message.parse(raw)
-      assert message.fields == [{52, "20090323-15:40:29"}, {11, "ORDER-1"}, {54, "1"}]
+      assert message.sending_time == "20090323-15:40:29"
+      assert message.header == [{115, "XYZ"}, {116, "SUB"}]
+      assert message.body == [{11, "ORDER-1"}, {54, "1"}]
+    end
+
+    test "does not promote header tags that appear after the body has started" do
+      raw = build_message([{35, "D"}, {34, "7"}, {11, "ORDER-1"}, {49, "SNEAKY"}])
+
+      assert {:ok, message, ""} = Message.parse(raw)
+      assert message.sender_comp_id == nil
+      assert message.header == []
+      assert message.body == [{11, "ORDER-1"}, {49, "SNEAKY"}]
     end
 
     test "does not store BodyLength(9) or CheckSum(10)" do
       raw = build_message([{35, "0"}, {34, "1"}])
 
       assert {:ok, message, ""} = Message.parse(raw)
-      refute Enum.any?(message.fields, fn {tag, _} -> tag in [8, 9, 10, 35, 34] end)
+
+      refute Enum.any?(message.header ++ message.body, fn {tag, _} ->
+               tag in [8, 9, 10, 35, 34]
+             end)
     end
 
     test "keeps the original wire bytes in :raw" do
@@ -90,13 +106,14 @@ defmodule FIX.MessageTest do
       assert message2.seq_num == 2
     end
 
-    test "promotes header fields regardless of their position" do
+    test "promotes header fields regardless of their order within the header" do
       raw = build_message([{49, "S"}, {56, "T"}, {35, "0"}, {34, "9"}])
 
       assert {:ok, message, ""} = Message.parse(raw)
       assert message.msg_type == "0"
       assert message.seq_num == 9
-      assert message.fields == []
+      assert message.header == []
+      assert message.body == []
     end
 
     test "leaves missing header fields as nil" do
@@ -113,7 +130,7 @@ defmodule FIX.MessageTest do
       raw = build_message([{35, "D"}, {34, "2"}, {95, byte_size(data)}, {96, data}])
 
       assert {:ok, message, ""} = Message.parse(raw)
-      assert message.fields == [{95, "8"}, {96, data}]
+      assert message.body == [{95, "8"}, {96, data}]
     end
 
     test "is garbled when MsgSeqNum(34) is not a positive integer" do
@@ -146,11 +163,25 @@ defmodule FIX.MessageTest do
         seq_num: 3,
         sender_comp_id: "SENDER",
         target_comp_id: "TARGET",
-        fields: [{112, "TEST"}]
+        body: [{112, "TEST"}]
       }
 
       expected =
         build_message([{35, "0"}, {49, "SENDER"}, {56, "TARGET"}, {34, "3"}, {112, "TEST"}])
+
+      assert Message.to_fix(message) == expected
+    end
+
+    test "encodes :header fields between the promoted header and the body" do
+      message = %Message{
+        begin_string: "FIX.4.4",
+        msg_type: "0",
+        seq_num: 3,
+        header: [{115, "XYZ"}],
+        body: [{112, "TEST"}]
+      }
+
+      expected = build_message([{35, "0"}, {34, "3"}, {115, "XYZ"}, {112, "TEST"}])
 
       assert Message.to_fix(message) == expected
     end
@@ -168,7 +199,8 @@ defmodule FIX.MessageTest do
         seq_num: 42,
         sender_comp_id: "SENDER",
         target_comp_id: "TARGET",
-        fields: [{11, "ORDER-1"}, {54, "1"}, {38, "100"}, {55, "CVS"}]
+        header: [{115, "XYZ"}],
+        body: [{11, "ORDER-1"}, {54, "1"}, {38, "100"}, {55, "CVS"}]
       }
 
       raw = Message.to_fix(message)

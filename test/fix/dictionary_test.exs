@@ -40,6 +40,27 @@ defmodule FIX.DictionaryTest do
       assert FIX.Dictionary.FIX44.companion_data_tag(9) == nil
       assert FIX.Dictionary.FIX44.companion_data_tag(383) == nil
     end
+
+    test "classifies standard header tags" do
+      for tag <- [8, 9, 35, 34, 49, 56, 52, 43, 122, 115, 128, 627, 628] do
+        assert FIX.Dictionary.FIX44.header_tag?(tag), "expected #{tag} to be a header tag"
+      end
+
+      refute FIX.Dictionary.FIX44.header_tag?(11)
+      refute FIX.Dictionary.FIX44.header_tag?(58)
+      refute FIX.Dictionary.FIX44.header_tag?(10)
+      # FIXT 1.1 session tags are not FIX 4.4 header tags
+      refute FIX.Dictionary.FIX44.header_tag?(1128)
+    end
+
+    test "classifies standard trailer tags" do
+      assert FIX.Dictionary.FIX44.trailer_tag?(10)
+      assert FIX.Dictionary.FIX44.trailer_tag?(93)
+      assert FIX.Dictionary.FIX44.trailer_tag?(89)
+
+      refute FIX.Dictionary.FIX44.trailer_tag?(35)
+      refute FIX.Dictionary.FIX44.trailer_tag?(58)
+    end
   end
 
   describe "FIX.Dictionary.FIX50SP2" do
@@ -105,12 +126,29 @@ defmodule FIX.DictionaryTest do
       assert FIX.Dictionary.FIX50SP2.companion_data_tag(383) == nil
     end
 
+    test "classifies the FIXT 1.1 session tags as header tags" do
+      assert FIX.Dictionary.FIX50SP2.header_tag?(1128)
+      assert FIX.Dictionary.FIX50SP2.header_tag?(1129)
+      assert FIX.Dictionary.FIX50SP2.header_tag?(1156)
+      assert FIX.Dictionary.FIX50SP2.header_tag?(35)
+
+      refute FIX.Dictionary.FIX50SP2.header_tag?(11)
+    end
+
+    test "classifies standard trailer tags" do
+      assert FIX.Dictionary.FIX50SP2.trailer_tag?(10)
+      assert FIX.Dictionary.FIX50SP2.trailer_tag?(93)
+      assert FIX.Dictionary.FIX50SP2.trailer_tag?(89)
+
+      refute FIX.Dictionary.FIX50SP2.trailer_tag?(35)
+    end
+
     test "parses an SP2 data field containing SOH" do
       reject_text = "bad" <> @soh <> "field"
       input = "1664=#{byte_size(reject_text)}" <> @soh <> "1665=#{reject_text}" <> @soh
 
       assert Parser.parse(input, FIX.Dictionary.FIX50SP2) ==
-               {:ok, [{1664, "9"}, {1665, reject_text}]}
+               {:ok, {[], [{1664, "9"}, {1665, reject_text}], []}}
 
       # the FIX44 dictionary doesn't know this pair
       assert Parser.parse(input, FIX.Dictionary.FIX44) == {:error, :garbled}
@@ -121,6 +159,11 @@ defmodule FIX.DictionaryTest do
     test "an empty dictionary maps every tag to nil" do
       assert EmptyDictionary.companion_data_tag(95) == nil
       assert EmptyDictionary.companion_data_tag(5001) == nil
+    end
+
+    test "an empty dictionary classifies every tag as body" do
+      refute EmptyDictionary.header_tag?(35)
+      refute EmptyDictionary.trailer_tag?(10)
     end
 
     test "declared pairs are looked up locally" do
@@ -134,6 +177,12 @@ defmodule FIX.DictionaryTest do
       assert CustomDictionary.companion_data_tag(35) == nil
     end
 
+    test "header and trailer tags defer to the extended dictionary" do
+      assert CustomDictionary.header_tag?(35)
+      assert CustomDictionary.trailer_tag?(10)
+      refute CustomDictionary.header_tag?(5001)
+    end
+
     test "local declarations override the extended dictionary" do
       assert OverridingDictionary.companion_data_tag(95) == 7096
     end
@@ -145,20 +194,20 @@ defmodule FIX.DictionaryTest do
       input = "5001=#{byte_size(raw)}" <> @soh <> "5002=#{raw}" <> @soh
 
       assert Parser.parse(input, CustomDictionary) ==
-               {:ok, [{5001, "12"}, {5002, raw}]}
+               {:ok, {[], [{5001, "12"}, {5002, raw}], []}}
     end
 
     test "the default dictionary treats custom tags as ordinary fields" do
       input = "5001=4" <> @soh <> "5002=text" <> @soh
 
-      assert Parser.parse(input) == {:ok, [{5001, "4"}, {5002, "text"}]}
+      assert Parser.parse(input) == {:ok, {[], [{5001, "4"}, {5002, "text"}], []}}
     end
 
     test "still handles standard data fields via the extended dictionary" do
       raw = "bin" <> @soh <> "data"
       input = "95=#{byte_size(raw)}" <> @soh <> "96=#{raw}" <> @soh
 
-      assert Parser.parse(input, CustomDictionary) == {:ok, [{95, "8"}, {96, raw}]}
+      assert Parser.parse(input, CustomDictionary) == {:ok, {[], [{95, "8"}, {96, raw}], []}}
     end
 
     test "parse_message/2 threads the dictionary through" do
@@ -167,8 +216,10 @@ defmodule FIX.DictionaryTest do
       payload = "8=FIX.4.4" <> @soh <> "9=#{byte_size(body)}" <> @soh <> body
       msg = payload <> "10=" <> checksum(payload) <> @soh
 
-      assert {:ok, fields, ""} = Parser.parse_message(msg, CustomDictionary)
-      assert {5002, raw} in fields
+      assert {:ok, {_header, body_fields, _trailer}, ""} =
+               Parser.parse_message(msg, CustomDictionary)
+
+      assert {5002, raw} in body_fields
 
       # ...while the default dictionary can't parse the embedded SOH
       assert Parser.parse_message(msg) == {:error, :garbled}

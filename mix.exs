@@ -12,6 +12,7 @@ defmodule FIX.Message.MixProject do
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
+      docs: docs(),
       package: package(),
       description: description(),
       source_url: @repo_url,
@@ -44,6 +45,12 @@ defmodule FIX.Message.MixProject do
     ]
   end
 
+  defp docs do
+    [
+      main: "README",
+      extras: ["README.md"]
+    ]
+  end
   defp description do
     "Elixir library for framing, parsing, inspecting, and encoding Financial Information eXchange (FIX) messages."
   end

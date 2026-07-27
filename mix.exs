@@ -19,17 +19,21 @@ defmodule FIX.Message.MixProject do
     ]
   end
 
-  defp package do
-    [
-      licenses: ["Apache-2.0"],
-      files: ~w(lib mix.exs README.md LICENSE)
-    ]
-  end
-
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:benchee, "~> 1.3", only: :dev, runtime: false}
+      {:benchee, "~> 1.3", only: :dev, runtime: false},
+      {:ex_doc, ">= 0.0.0", only: :dev, runtime: false}
+    ]
+  end
+
+  defp package do
+    [
+      licenses: ["Apache-2.0"],
+      links: %{
+        "GitHub" => "https://github.com/addigence/fix_message"
+      },
+      files: ~w(lib mix.exs README.md LICENSE)
     ]
   end
 end

@@ -74,7 +74,7 @@ defmodule FIX.Parser do
       total_len = payload_len + 7
 
       case buffer do
-        <<payload::binary-size(payload_len), "10=", cs::binary-size(3), 0x01, rest::binary>> ->
+        <<payload::binary-size(^payload_len), "10=", cs::binary-size(3), 0x01, rest::binary>> ->
           verify_checksum(buffer, payload, cs, total_len, rest)
 
         _ when byte_size(buffer) < total_len ->
@@ -195,7 +195,7 @@ defmodule FIX.Parser do
   defp data_field(binary, data_tag, len_value) do
     with {:len, len} <- data_length(len_value),
          {:tag, ^data_tag, rest} <- tag(binary, 0, 0),
-         <<data::binary-size(len), 0x01, rest::binary>> <- rest do
+         <<data::binary-size(^len), 0x01, rest::binary>> <- rest do
       {:data, data, rest}
     else
       _ -> :error

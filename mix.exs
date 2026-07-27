@@ -29,10 +29,13 @@ defmodule FIX.Message.MixProject do
 
   defp package do
     [
+      description:
+        "Elixir library for framing, parsing, inspecting, and encoding Financial Information eXchange (FIX) messages.",
       licenses: ["Apache-2.0"],
       links: %{
         "GitHub" => "https://github.com/addigence/fix_message"
       },
+      source_url: "https://github.com/addigence/fix_message",
       files: ~w(lib mix.exs README.md LICENSE)
     ]
   end
